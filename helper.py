@@ -15,9 +15,23 @@ from tqdm import tqdm
 from optparse import OptionParser
 from urllib.request import urlretrieve
 
-from VideoGet import VideoGet
-from VideoShow import VideoShow
-from VideoZed import VideoZed
+from PIL import Image
+
+# from VideoGet import VideoGet
+# from VideoShow import VideoShow
+# from VideoZed import VideoZed
+
+colorList = []
+colorList.append(np.array([  0, 255, 255]))     # sky_color
+colorList.append(np.array([128, 128, 128]))     # road_color
+colorList.append(np.array([255, 255,   0]))     # lane_color
+colorList.append(np.array([255,   0,   0]))     # fence_color
+colorList.append(np.array([128,   0, 128]))     # construction_color
+colorList.append(np.array([255,   0, 128]))     # traffic_sing_color
+colorList.append(np.array([  0,   0, 128]))     # car_color
+colorList.append(np.array([  0, 128, 128]))     # truck_color
+colorList.append(np.array([  0, 128,   0]))     # vegetation_color
+colorList.append(np.array([255, 255, 255]))     # unknown_color
 
 class DLProgress(tqdm):
   last_block = 0
@@ -87,12 +101,13 @@ def get_args():
 
     log_path = options.log_path if options.log_path is None else '.'
     epochs = int(options.epochs) if options.epochs is not None else 25
-    batch_size = options.batch_size if options.batch_size is not None else 4
+    batch_size = int(options.batch_size) if options.batch_size is not None else 4
     vgg_dir = options.vgg_dir if options.vgg_dir is not None else './data/vgg'
     learn_rate = float(options.learn_rate) if options.learn_rate is not None else 9e-5
     data_path = options.data_path if options.data_path is not None else './data/data_road'
     graph_visualize = options.graph_visualize if options.graph_visualize is not None else False
-    num_classes = options.num_classes if options.num_classes is not None else 2
+    num_classes = int(options.num_classes) if options.num_classes is not None else 2
+    num_classes = num_classes + 1
     glob_trainig_images_path = options.glob_trainig_images_path if options.glob_trainig_images_path \
      is None else './data/data_road/training/image_2/*.png'
     glob_labels_trainig_image_path = options.glob_labels_trainig_image_path if options.glob_labels_trainig_image_path \
@@ -134,10 +149,9 @@ def gen_batch_function(glob_trainig_images_path, glob_labels_trainig_image_path,
     image_paths = glob(glob_trainig_images_path)
     # TODO: verify a generic way to construct this batch dataset
     label_paths = {
-        re.sub(r'_(lane|road)_', '_', os.path.basename(path)): path 
+        os.path.basename(path).replace("ColorLabel", "RGB_Image"): path 
         for path in glob(glob_labels_trainig_image_path)}
-    
-    background_color = np.array([255, 0, 0])
+
     random.shuffle(image_paths)
     for batch_i in range(0, len(image_paths), batch_size):
       images = []
@@ -145,17 +159,26 @@ def gen_batch_function(glob_trainig_images_path, glob_labels_trainig_image_path,
       for image_file in image_paths[batch_i:batch_i+batch_size]:
         gt_image_file = label_paths[os.path.basename(image_file)]
 
-        image = scipy.misc.imresize(scipy.misc.imread(image_file), image_shape)
-        gt_image = scipy.misc.imresize(scipy.misc.imread(gt_image_file), image_shape)
+        image = np.array(Image.open(image_file).resize((image_shape[1], image_shape[0]))) 
+        gt_image = np.array(Image.open(gt_image_file).resize((image_shape[1], image_shape[0])))
 
         ############gt_image is a jpg file with extension .png############
         if gt_image[0].shape[1] != 3:
           raise ValueError("GT IMAGE MUST CONTAIN 3 CHANNELS (JPG FILE)")
 
-        gt_bg = np.all(gt_image == background_color, axis=2)
-        gt_bg = gt_bg.reshape(*gt_bg.shape, 1)
-        gt_image = np.concatenate((gt_bg, np.invert(gt_bg)), axis=2)
+        gt_gap = np.zeros((image.shape[0], image.shape[1]), dtype=np.bool)
+        gt_gap = gt_gap.reshape(*gt_gap.shape, 1)
+        gt_bg_list = []
+        for color in colorList[:-1]:
+          gt_bg = np.all(gt_image == color, axis=2)
+          gt_bg = gt_bg.reshape(*gt_bg.shape, 1)
 
+          gt_gap = np.logical_or(gt_gap, gt_bg)
+          gt_bg_list.append(gt_bg)
+
+        gt_bg_list.append(np.invert(gt_gap))
+        gt_image = np.concatenate(gt_bg_list, axis=2)
+        
         images.append(image)
         gt_images.append(gt_image)
 
@@ -177,9 +200,9 @@ def gen_test_output(sess, logits, keep_prob, image_pl, data_folder, image_shape)
   for image_file in glob(os.path.join(data_folder, 'image_2', '*.png')):
     start = time.clock()
     
-    image = scipy.misc.imresize(scipy.misc.imread(image_file), image_shape)
+    image = np.array(Image.open(image_file).resize((image_shape[1], image_shape[0]))) 
 
-    street_im = predict(sess, image, image_pl, keep_prob, logits, image_shape)
+    street_im = predict_ex(sess, image, image_pl, keep_prob, logits, image_shape)
 
     timeCount = (time.time() - start)
     print (image_file + " process time: " + str(timeCount))
@@ -195,48 +218,64 @@ def predict(sess, image, image_pl, keep_prob, logits, image_shape):
     im_softmax = im_softmax[0][:, 1].reshape(image_shape[0], image_shape[1])
     segmentation = (im_softmax > 0.5).reshape(image_shape[0], image_shape[1], 1)
     mask = np.dot(segmentation, np.array([[0, 255, 0, 127]]))
-    mask = scipy.misc.toimage(mask, mode="RGBA")
-    street_im = scipy.misc.toimage(image)
-    street_im.paste(mask, box=None, mask=mask)
+    mask = Image.fromarray(mask, 'RGBA')
+    street_im = Image.fromarray(image)
+    street_im.paste(mask, (0,0), mask)
     
     return street_im
 
-def read_zed(sess, image_shape, logits, keep_prob, input_image):
-    count = 0
-    video_zed = VideoZed(sess, image_shape, logits, keep_prob, input_image).start()
+def predict_ex(sess, image, image_pl, keep_prob, logits, image_shape):
+    im_softmax = sess.run(
+        [tf.nn.softmax(logits)],
+        {keep_prob: 1.0, image_pl: [image]})
 
-    while type(video_zed.frame) == type(None):
-      if count == 3:
-        exit("Error to open ZED")
-      print("Waiting for zed")
-      count+=1
-      time.sleep(1)
-      
-    video_shower = VideoShow(video_zed.frame).start()
-
-    while True:
-        if video_zed.stopped or video_shower.stopped:
-            video_shower.stop()
-            video_zed.stop()
-            break
-
-        frame = video_zed.frame
-        video_shower.frame = frame
-
-def predict_video(data_dir, sess, image_shape, logits, keep_prob, input_image):
-    print('Predicting Video...')
+    street_im = scipy.misc.toimage(image)
+    for i in range(len(colorList)):
+      im_softmax_n = im_softmax[0][:, i].reshape(image_shape[0], image_shape[1])
+      segmentation = (im_softmax_n > 0.5).reshape(image_shape[0], image_shape[1], 1)
+      color = colorList[i]
+      mask = np.dot(segmentation, np.array([[color[0], color[1], color[2], 127]]))
+      mask = scipy.misc.toimage(mask, mode="RGBA")
+      street_im.paste(mask, box=None, mask=mask)
     
-    video_getter = VideoGet(data_dir, sess, image_shape, logits, keep_prob, input_image).start()
-    video_shower = VideoShow(video_getter.frame).start()
+    return street_im
 
-    while True:
-        if video_getter.stopped or video_shower.stopped:
-            video_shower.stop()
-            video_getter.stop()
-            break
-
-        frame = video_getter.frame
-        video_shower.frame = frame
+# def read_zed(sess, image_shape, logits, keep_prob, input_image):
+#     count = 0
+#     video_zed = VideoZed(sess, image_shape, logits, keep_prob, input_image).start()
+#
+#     while type(video_zed.frame) == type(None):
+#       if count == 3:
+#         exit("Error to open ZED")
+#       print("Waiting for zed")
+#       count+=1
+#       time.sleep(1)
+#
+#     video_shower = VideoShow(video_zed.frame).start()
+#
+#     while True:
+#         if video_zed.stopped or video_shower.stopped:
+#             video_shower.stop()
+#             video_zed.stop()
+#             break
+#
+#         frame = video_zed.frame
+#         video_shower.frame = frame
+#
+# def predict_video(data_dir, sess, image_shape, logits, keep_prob, input_image):
+#     print('Predicting Video...')
+#
+#     video_getter = VideoGet(data_dir, sess, image_shape, logits, keep_prob, input_image).start()
+#     video_shower = VideoShow(video_getter.frame).start()
+#
+#     while True:
+#         if video_getter.stopped or video_shower.stopped:
+#             video_shower.stop()
+#             video_getter.stop()
+#             break
+#
+#         frame = video_getter.frame
+#         video_shower.frame = frame
         
 def save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_prob, input_image):
   # Make folder for current run
@@ -250,4 +289,5 @@ def save_inference_samples(runs_dir, data_dir, sess, image_shape, logits, keep_p
   image_outputs = gen_test_output(
       sess, logits, keep_prob, input_image, os.path.join(data_dir, 'testing'), image_shape)
   for name, image in image_outputs:
-    scipy.misc.imsave(os.path.join(output_dir, name), image)
+    im = Image.fromarray(image)
+    im.save(os.path.join(output_dir, name))

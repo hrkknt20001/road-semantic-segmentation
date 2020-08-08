@@ -12,7 +12,10 @@ from distutils.version import LooseVersion
 from tensorflow.python.platform import gfile
 from tensorflow.core.protobuf import saved_model_pb2
 
-image_shape = (160, 576)
+# You can select appropriate to choose one.
+#image_shape = (160, 576)  # original
+#image_shape = (320, 480)
+image_shape = (640, 960)
 
 def load_vgg(sess, vgg_path):
     """
@@ -139,7 +142,7 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     #KK Regularization loss collector....Don't really understand this
     reg_losses = tf.get_collection(tf.GraphKeys.REGULARIZATION_LOSSES)
     reg_constant = 0.01  # Choose an appropriate one.
-    loss = cross_entropy_loss + reg_constant * sum(reg_losses)
+    loss = cross_entropy_loss + reg_constant * tf.reduce_sum(reg_losses)
 
     # KK Minimize the loss using Adam Optimizer
     optimizer = tf.train.AdamOptimizer(learning_rate=learning_rate, beta1=0.9, beta2=0.999, epsilon=1e-8)
@@ -148,7 +151,7 @@ def optimize(nn_last_layer, correct_label, learning_rate, num_classes):
     return logits, train_op, loss
 
 def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_image,
-             correct_label, keep_prob, learning_rate):
+             correct_label, keep_prob, learning_rate, train_dat_count=0):
     """
     Train neural network and print out the loss during training.
     :param sess: TF Session
@@ -169,7 +172,7 @@ def train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_l
         print('........................Training Epoch # {}/{}...................'.format(epoch, epochs))
         print('##############################################################')
 
-        bar = progressbar.ProgressBar()
+        bar = progressbar.ProgressBar(maxval=train_dat_count/batch_size)
         # KK loop through images and labels
         loss = None
         for image, label in bar(get_batches_fn(batch_size)):
@@ -201,7 +204,7 @@ def run():
     runs_dir = './runs'
 
     print("\n\nTesting for datatset presence......")
-    tests.test_looking_for_dataset(data_dir)
+    train_dat_count = tests.test_looking_for_dataset(data_dir)
 
     # Download pretrained vgg model
     helper.maybe_download_pretrained_vgg(vgg_dir)
@@ -252,7 +255,7 @@ def run():
 
         sess.run(init_op)
         train_nn(sess, epochs, batch_size, get_batches_fn, train_op, cross_entropy_loss, input_image,
-                 correct_label, keep_prob, learning_rate)
+                 correct_label, keep_prob, learning_rate, train_dat_count)
 
 
         folderToSaveModel = "model"
@@ -264,7 +267,7 @@ def run():
             print('Var {}: {}'.format(i, var))
 
         if not os.path.exists(folderToSaveModel):
-            os.makedirs(path)
+            os.makedirs(folderToSaveModel)
 
         pathSaveModel = os.path.join(folderToSaveModel, "model.ckpt")
         pathSaveModel = saver.save(sess, pathSaveModel)

@@ -1,6 +1,6 @@
 import cv2
 import helper
-import pyzed.sl as sl
+# import pyzed.sl as sl
 import numpy as np
 from threading import Thread
 
